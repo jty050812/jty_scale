@@ -404,7 +404,287 @@ CAL REF (g)> 500
 | Main Loop | Tick Timer | Task scheduling |
 | All Components | C Library | Basic functions |
 
-## 17. Conclusion
+## 17. 核心概念详解
+
+### 17.1 清晰的状态显示 (Clear Status Display)
+
+**在项目中的作用**：
+- 实时向用户展示电子秤的工作状态，包括重量、稳定性、过载情况、传感器故障等
+- 提供直观的操作提示（按键功能说明）
+- 增强用户体验，让用户快速了解当前秤的工作状态
+
+**输入与输出**：
+- **输入**：`scale_state_t` 结构中的状态信息（`grams`, `unstable`, `overload`, `sensor_fault`, `cal_ready` 等）
+- **输出**：LCD 屏幕上的可视化界面
+  - 重量数值（大字体显示）
+  - 状态标签（"UNSTABLE", "OVERLOAD", "HX711 ERROR", "CAL OK" 等）
+  - 操作提示
+
+**原理**：
+```c
+void scale_render(struct surface_t * screen, struct scale_state_t * state)
+{
+    fill_rect(screen, 0, 0, screen->w, screen->h, g_colors.bg);
+    
+    // 根据不同状态显示不同信息
+    if(state->sensor_fault) {
+        // 显示传感器故障信息
+        screen_printf(screen, 310, 90, 7, g_colors.warn, "HX711 ERROR");
+    } else {
+        // 显示正常重量
+        screen_printf(screen, 380, 90, 10, g_colors.fg, "%7.2f", state->grams);
+        // 显示状态标识
+        if(state->unstable)
+            screen_printf(screen, 300, 345, 4, g_colors.warn, "UNSTABLE");
+        else if(state->overload)
+            screen_printf(screen, 300, 345, 4, g_colors.warn, "OVERLOAD");
+    }
+}
+```
+- 使用不同颜色区分不同状态（绿色表示正常，橙色表示警告，红色表示错误）
+- 根据 `scale_state_t` 中的标志位选择显示内容
+- 实时更新屏幕（每 80ms 刷新一次）
+
+**关键代码位置**：[scale.c](file:///workspace/source/scale.c#L468-L507)
+
+---
+
+### 17.2 安全运行：校准双重确认 (Safe Operation: Double Confirmation for Calibration)
+
+**在项目中的作用**：
+- 防止误触导致的意外校准操作
+- 确保用户确实想要进入校准模式
+- 提高系统的安全性和可靠性
+
+**输入与输出**：
+- **输入**：MENU 按键的按下事件
+- **输出**：
+  - 第一次按下：串口提示 "Press MENU again within 1s to confirm"
+  - 第二次按下（在 1 秒内）：进入校准模式
+  - 超时未按下：取消校准流程
+
+**原理**：
+```c
+static u32_t g_cal_confirm_deadline = 0;
+
+bool_t scale_handle_keydown(struct scale_state_t * state, u32_t keydown)
+{
+    if((keydown & SCALE_CAL_KEY) != 0) {
+        now = jiffies;
+        // 检查是否在确认时间窗口内
+        if(g_cal_confirm_deadline != 0 && time_before_eq(now, g_cal_confirm_deadline)) {
+            g_cal_confirm_deadline = 0;
+            // 进入校准模式
+            scale_prompt_reference_grams(&reference_grams);
+        } else {
+            // 设置确认时间窗口（1秒）
+            confirm_ticks = get_system_hz();
+            g_cal_confirm_deadline = now + confirm_ticks;
+            serial_printf(2, "[CAL] Press MENU again within 1s to confirm.\r\n");
+        }
+        return 1;
+    }
+    return 0;
+}
+```
+- 使用全局变量 `g_cal_confirm_deadline` 记录确认截止时间
+- 第一次按下设置截止时间为当前时间 + 1 秒
+- 第二次按下检查是否在截止时间内，若是则执行校准，否则重置
+- 使用 `time_before_eq()` 宏进行时间比较
+
+**关键代码位置**：[scale.c](file:///workspace/source/scale.c#L360-L424)
+
+---
+
+### 17.3 安全运行：全面故障检测 (Safe Operation: Comprehensive Fault Detection)
+
+**在项目中的作用**：
+- 实时监测传感器和系统状态
+- 及时发现并报告异常情况
+- 防止错误数据显示
+- 提高系统的可靠性和安全性
+
+**输入与输出**：
+- **输入**：
+  - HX711 读取结果（成功/失败）
+  - 原始数据样本的跨度
+  - 计算出的重量值
+- **输出**：
+  - 故障标志位（`sensor_fault`, `unstable`, `overload`, `invalid_scale`）
+  - 屏幕上的故障提示
+  - 串口日志信息
+
+**原理**：
+
+#### 1. 传感器故障检测
+```c
+void scale_mark_sensor_fault(struct scale_state_t * state)
+{
+    state->sensor_fault = 1;
+    state->grams = 0.0f;
+    if(!state->sensor_fault_reported) {
+        serial_printf(2, "[SCALE] HX711 read timeout or sensor disconnected.\r\n");
+        state->sensor_fault_reported = 1;
+    }
+}
+```
+- 连续读取失败超过 100 次触发故障
+- 故障时清零重量显示，防止错误数据
+- 通过串口报告故障状态
+
+#### 2. 稳定性检测
+```c
+static s32_t scale_get_sample_span(struct scale_state_t * state)
+{
+    // 计算样本中的最大值和最小值之差
+    // 如果差值 > 1200，则认为数据不稳定
+    return max_value - min_value;
+}
+```
+- 通过计算样本缓冲区中的最大值和最小值之差来判断稳定性
+- 差值超过阈值（1200）时标记为不稳定
+- 不稳定时显示 "UNSTABLE" 提示用户
+
+#### 3. 过载检测
+```c
+void scale_update_grams(struct scale_state_t * state)
+{
+    state->grams = (state->raw - state->tare_raw) / cpg;
+    // 检查是否超出显示范围
+    if(state->grams > SCALE_MAX_DISPLAY_GRAMS || state->grams < SCALE_MIN_DISPLAY_GRAMS) {
+        state->overload = 1;
+    }
+}
+```
+- 检查重量是否超出设定的显示范围（-500g 到 5000g）
+- 超出范围时标记为过载并显示 "OVERLOAD"
+
+**关键代码位置**：
+- 传感器故障：[scale.c](file:///workspace/source/scale.c#L142-L168)
+- 稳定性检测：[scale.c](file:///workspace/source/scale.c#L115-L140)
+- 过载检测：[scale.c](file:///workspace/source/scale.c#L434-L466)
+
+---
+
+### 17.4 高效调度：非阻塞性多任务处理 (Efficient Scheduling: Non-blocking Multi-tasking)
+
+**在项目中的作用**：
+- 在单线程环境下实现多个独立任务的并行执行
+- 确保每个任务都能在其最优时间间隔内运行
+- 提高系统的响应性和资源利用率
+- 避免任务之间的相互阻塞
+
+**输入与输出**：
+- **输入**：系统滴答计数器（`jiffies`）
+- **输出**：
+  - 采样任务（50ms）：更新重量数据
+  - 按键扫描任务（10ms）：检测用户输入
+  - 渲染任务（80ms）：更新屏幕显示
+
+**原理**：
+```c
+int tester_scale(int argc, char * argv[])
+{
+    u32_t sample_period = ms_to_ticks(SCALE_SAMPLE_PERIOD_MS);  // 50ms
+    u32_t key_period = ms_to_ticks(SCALE_KEY_PERIOD_MS);        // 10ms
+    u32_t render_period = ms_to_ticks(SCALE_RENDER_PERIOD_MS);  // 80ms
+    
+    u32_t next_sample = jiffies;
+    u32_t next_key = jiffies;
+    u32_t next_render = jiffies;
+    
+    while(1) {
+        now = jiffies;
+        
+        // 检查是否该执行采样任务
+        if(time_after_eq(now, next_sample)) {
+            scale_update_raw(&state);
+            scale_update_grams(&state);
+            next_sample = now + sample_period;
+        }
+        
+        // 检查是否该执行按键扫描任务
+        if(time_after_eq(now, next_key)) {
+            get_key_event(&keyup, &keydown);
+            scale_handle_keydown(&state, keydown);
+            next_key = now + key_period;
+        }
+        
+        // 检查是否该执行渲染任务
+        if(time_after_eq(now, next_render)) {
+            scale_render(screen, &state);
+            s5pv210_screen_flush();
+            next_render = now + render_period;
+        }
+    }
+}
+```
+- 使用时间片轮转的方式，每个任务有自己的执行周期
+- 记录每个任务下次应该执行的时间点（`next_*`）
+- 使用 `time_after_eq()` 宏比较当前时间和下次执行时间
+- 每个任务执行完后更新下次执行时间
+- 任务之间完全独立，互不阻塞
+
+**时间优化原理**：
+- **采样任务（50ms）**：平衡了 HX711 的转换时间（~12.5ms）和数据更新频率
+- **按键扫描任务（10ms）**：足够快以捕捉快速的按键操作
+- **渲染任务（80ms）**：在视觉流畅度和 CPU 占用之间取得平衡（约 12.5 FPS）
+
+**关键代码位置**：[tester-scale.c](file:///workspace/source/tester-scale.c#L37-L107)
+
+---
+
+### 17.5 代码库结构良好、模块化 (Well-structured, Modular Codebase)
+
+**在项目中的作用**：
+- 提高代码的可读性和可维护性
+- 便于功能扩展和定制
+- 降低代码耦合度
+- 提高代码复用性
+- 便于团队协作
+
+**设计原则**：
+
+#### 1. 分层架构
+```
+应用层 (main.c, tester-scale.c, scale.c)
+    ↓
+硬件抽象层 (硬件驱动: hx711.c, s5pv210-fb.c, hw-key.c)
+    ↓
+核心库 (library/, graphic/)
+    ↓
+硬件层 (S5PV210 SoC)
+```
+
+#### 2. 模块化设计
+- **硬件驱动独立**：每个硬件模块有独立的驱动文件
+- **功能分离**：采样、滤波、渲染、按键处理等功能分离
+- **接口清晰**：通过头文件定义明确的接口
+
+#### 3. 关键模块划分
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| 系统初始化 | [main.c](file:///workspace/source/main.c) | 初始化所有外设 |
+| 主调度器 | [tester-scale.c](file:///workspace/source/tester-scale.c) | 任务调度 |
+| 秤逻辑 | [scale.c](file:///workspace/source/scale.c) | 采样、滤波、校准、渲染 |
+| HX711 驱动 | [hx711.c](file:///workspace/source/hardware/hx711.c) | 传感器通信 |
+| LCD 驱动 | [s5pv210-fb.c](file:///workspace/source/hardware/s5pv210-fb.c) | 显示输出 |
+| 按键驱动 | [hw-key.c](file:///workspace/source/hardware/hw-key.c) | 用户输入 |
+
+#### 4. 配置与实现分离
+- 配置参数集中在 [scale.h](file:///workspace/include/scale.h)
+- 实现代码与配置分离
+- 便于修改参数而无需更改代码
+
+#### 5. 扩展性支持
+- 模块化结构便于添加新功能
+- 清晰的接口便于替换或升级模块
+- 预留了未来扩展的可能性（如持久化存储、无线通信等）
+
+---
+
+## 18. Conclusion
 
 This electronic scale project demonstrates a complete embedded system implementation with:
 
