@@ -16,6 +16,42 @@ struct scale_ui_colors_t {
 static struct scale_ui_colors_t g_colors;
 static u32_t g_cal_confirm_deadline = 0;
 
+static const char * scale_fsm_state_name(enum scale_fsm_state_t state)
+{
+	switch(state)
+	{
+	case SCALE_FSM_BOOT:
+		return "BOOT";
+	case SCALE_FSM_WEIGHING:
+		return "WEIGHING";
+	case SCALE_FSM_TARE_DONE:
+		return "TARE_DONE";
+	case SCALE_FSM_CAL_PENDING:
+		return "CAL_PENDING";
+	case SCALE_FSM_CAL_DONE:
+		return "CAL_DONE";
+	case SCALE_FSM_FAULT:
+		return "FAULT";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static void scale_fsm_set_state(struct scale_state_t * state, enum scale_fsm_state_t next, const char * reason)
+{
+	if(!state)
+		return;
+
+	if(state->fsm_state == next)
+		return;
+
+	serial_printf(2, "[FSM] %s -> %s (%s)\r\n",
+		scale_fsm_state_name(state->fsm_state),
+		scale_fsm_state_name(next),
+		reason ? reason : "none");
+	state->fsm_state = next;
+}
+
 static u32_t map_rgb(struct surface_t * screen, u8_t r, u8_t g, u8_t b)
 {
 	struct color_t c;
@@ -152,6 +188,8 @@ static void scale_mark_sensor_fault(struct scale_state_t * state)
 		serial_printf(2, "[SCALE] HX711 read timeout or sensor disconnected.\r\n");
 		state->sensor_fault_reported = 1;
 	}
+
+	scale_fsm_set_state(state, SCALE_FSM_FAULT, "sensor fault");
 }
 
 static void scale_clear_sensor_fault(struct scale_state_t * state)
@@ -165,6 +203,7 @@ static void scale_clear_sensor_fault(struct scale_state_t * state)
 	state->sensor_fault = 0;
 	state->sensor_fault_reported = 0;
 	state->sensor_fail_count = 0;
+	scale_fsm_set_state(state, SCALE_FSM_WEIGHING, "sensor recovered");
 }
 
 void scale_ui_init(struct surface_t * screen)
@@ -198,6 +237,7 @@ void scale_state_init(struct scale_state_t * state)
 	state->unstable = 1;
 	state->overload = 0;
 	state->invalid_scale = 0;
+	state->fsm_state = SCALE_FSM_BOOT;
 
 	for(i = 0; i < SCALE_RAW_FILTER_SIZE; i++)
 		state->samples[i] = 0;
@@ -221,6 +261,7 @@ void scale_state_bootstrap(struct scale_state_t * state)
 		state->unstable = 1;
 		state->overload = 0;
 		state->invalid_scale = 0;
+		scale_fsm_set_state(state, SCALE_FSM_WEIGHING, "bootstrap ok");
 	}
 	else
 	{
@@ -258,6 +299,21 @@ bool_t scale_update_raw(struct scale_state_t * state)
 
 		if(state->sensor_fault)
 			scale_clear_sensor_fault(state);
+
+		if(state->fsm_state == SCALE_FSM_BOOT ||
+			state->fsm_state == SCALE_FSM_TARE_DONE ||
+			state->fsm_state == SCALE_FSM_CAL_DONE)
+		{
+			scale_fsm_set_state(state, SCALE_FSM_WEIGHING, "stable update");
+		}
+
+		if(state->fsm_state == SCALE_FSM_CAL_PENDING &&
+			g_cal_confirm_deadline != 0 &&
+			time_after(jiffies, g_cal_confirm_deadline))
+		{
+			g_cal_confirm_deadline = 0;
+			scale_fsm_set_state(state, SCALE_FSM_WEIGHING, "cal confirm timeout");
+		}
 
 		return 1;
 	}
@@ -316,23 +372,57 @@ static bool_t scale_commit_calibration(struct scale_state_t * state, float refer
 	hx711_set_scale(counts_per_gram);
 	state->cal_ready = 1;
 	state->invalid_scale = 0;
+	scale_fsm_set_state(state, SCALE_FSM_CAL_DONE, "calibration success");
 	serial_printf(2, "[CAL] Reference: %.2f g, factor: %.2f counts/gram\r\n", reference_grams, counts_per_gram);
 	return 1;
 }
 
 static bool_t scale_prompt_reference_grams(float * reference_grams)
 {
-	char * line;
+	char line[32];
 	char * end;
 	double value;
+	size_t len;
+	u8_t ch;
 
 	if(!reference_grams)
 		return 0;
 
 	serial_printf(2, "[CAL] Put known weight on scale, then type grams in serial.\r\n");
-	line = readline(2, "CAL REF (g)> ");
-	if(!line)
-		return 0;
+	serial_printf(2, "CAL REF (g)> ");
+
+	len = 0;
+	for(;;)
+	{
+		if(s5pv210_serial_read(2, &ch, 1) != 1)
+			continue;
+
+		if(ch == '\r' || ch == '\n')
+		{
+			s5pv210_serial_write_string(2, "\r\n");
+			line[len] = '\0';
+			break;
+		}
+
+		if(ch == 0x08 || ch == 0x7f)
+		{
+			if(len > 0)
+			{
+				len--;
+				s5pv210_serial_write_string(2, "\b \b");
+			}
+			continue;
+		}
+
+		if(ch < 0x20 || ch > 0x7e)
+			continue;
+
+		if(len + 1 < sizeof(line))
+		{
+			line[len++] = (char)ch;
+			s5pv210_serial_write(2, &ch, 1);
+		}
+	}
 
 	value = strtod(line, &end);
 	while(*end == ' ' || *end == '\t')
@@ -341,19 +431,16 @@ static bool_t scale_prompt_reference_grams(float * reference_grams)
 	if(end == line || *end != '\0' || value <= 0.0)
 	{
 		serial_printf(2, "[CAL] Invalid input. Example: 200 or 500.0\r\n");
-		free(line);
 		return 0;
 	}
 
 	if(value < SCALE_CAL_REFERENCE_MIN_GRAMS || value > SCALE_CAL_REFERENCE_MAX_GRAMS)
 	{
 		serial_printf(2, "[CAL] Input out of range: %.2f g\r\n", (float)value);
-		free(line);
 		return 0;
 	}
 
 	*reference_grams = (float)value;
-	free(line);
 	return 1;
 }
 
@@ -387,6 +474,7 @@ bool_t scale_handle_keydown(struct scale_state_t * state, u32_t keydown)
 		state->grams = 0.0f;
 		state->cal_ready = 0;
 		state->overload = 0;
+		scale_fsm_set_state(state, SCALE_FSM_TARE_DONE, "tare key");
 		serial_printf(2, "[TARE] Zero point set.\r\n");
 		return 1;
 	}
@@ -410,12 +498,15 @@ bool_t scale_handle_keydown(struct scale_state_t * state, u32_t keydown)
 			if(confirm_ticks == 0)
 				confirm_ticks = 100;
 			g_cal_confirm_deadline = now + confirm_ticks;
+			scale_fsm_set_state(state, SCALE_FSM_CAL_PENDING, "wait confirm");
 			serial_printf(2, "[CAL] Press MENU again within 1s to confirm.\r\n");
 			return 1;
 		}
 
 		if(scale_prompt_reference_grams(&reference_grams))
 			return scale_commit_calibration(state, reference_grams);
+
+		scale_fsm_set_state(state, SCALE_FSM_WEIGHING, "calibration canceled");
 
 		return 1;
 	}
@@ -487,6 +578,7 @@ void scale_render(struct surface_t * screen, struct scale_state_t * state)
 		screen_printf(screen, 770, 120, 5, g_colors.accent, "g");
 		screen_printf(screen, 260, 190, 4, g_colors.dim, "POWER:TARE  MENU:CAL(SERIAL)");
 		screen_printf(screen, 280, 250, 4, g_colors.dim, "LAST REF: %.1fg", state->last_reference_grams);
+		screen_printf(screen, 250, 220, 4, g_colors.dim, "STATE: %s", scale_fsm_state_name(state->fsm_state));
 		if(state->cal_ready)
 			screen_printf(screen, 330, 300, 4, g_colors.accent, "CAL OK");
 		else

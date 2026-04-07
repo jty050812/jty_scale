@@ -25,6 +25,15 @@ struct surface_t;
 #define SCALE_MIN_DISPLAY_GRAMS	(-500.0f)
 #define SCALE_STABLE_RAW_SPAN_MAX	(1200)
 
+enum scale_fsm_state_t {
+	SCALE_FSM_BOOT = 0,
+	SCALE_FSM_WEIGHING,
+	SCALE_FSM_TARE_DONE,
+	SCALE_FSM_CAL_PENDING,
+	SCALE_FSM_CAL_DONE,
+	SCALE_FSM_FAULT,
+};
+
 struct scale_state_t {
 	s32_t raw;
 	s32_t tare_raw;
@@ -43,6 +52,7 @@ struct scale_state_t {
 	bool_t unstable;
 	bool_t overload;
 	bool_t invalid_scale;
+	enum scale_fsm_state_t fsm_state;
 };
 
 void scale_ui_init(struct surface_t * screen);
