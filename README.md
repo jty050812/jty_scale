@@ -128,7 +128,7 @@ make.exe -f Makefile
 - **处理器**：Samsung S5PV210（ARM Cortex-A8，1GHz）
 - **内存布局**：SDRAM 0x30000000~0x4FFFFFFF（512MB）
 - **传感器接口**：GPIO 位操作（DOUT→GPB.2，SCK→GPB.0）
-- **显示**：LCD 800×480，通过 framebuffer
+- **显示**：LCD 1024×600，通过 framebuffer
 - **通信**：UART2 115200bps，用于日志和标定输入
 
 ### 1.4 非目标
@@ -639,7 +639,7 @@ void scale_render(struct surface_t * screen, struct scale_state_t * state);
 **何时调用**：轮询循环每 80ms 调用一次
 
 **输入参数**：
-- `screen`：LCD 显示缓冲（800×480 像素的 framebuffer）
+- `screen`：LCD 显示缓冲（1024×600 像素的 framebuffer）
 - `state`：秤状态，包含当前克重、FSM 状态等
 
 **输出**：
@@ -651,7 +651,7 @@ void scale_render(struct surface_t * screen, struct scale_state_t * state);
 **渲染布局**（scale.c）：
 
 ```
-LCD 屏幕（800×480）
+LCD 屏幕（1024×600）
 ┌─────────────────────────────────┐
 │  [ 电子秤测量系统 ]              │ (标题, Y=20px)
 │                                 │

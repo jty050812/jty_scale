@@ -92,7 +92,7 @@ int tester_scale(int argc, char * argv[])
 
 		if(time_after_eq(now, next_render))
 		{
-			/* Render screen (screen is 800x480) */
+			/* Render screen (screen is 1024x600) */
 			s5pv210_screen_swap();
 			screen = s5pv210_screen_surface();
 			scale_render(screen, &state);
