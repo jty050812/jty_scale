@@ -67,16 +67,40 @@ tools/linux/
 └── README.md      # 本说明文件
 ```
 
+## 自动烧录功能
+
+为了实现完全自动化的烧录过程，我们提供了Windows平台的自动控制脚本：
+
+### 使用方法
+
+1. **在Windows电脑上运行**：
+   - 进入 `tools/windows/` 目录
+   - 双击 `flash_automatic.bat` 运行
+
+2. **脚本功能**：
+   - 自动启动MobaXterm
+   - 打开TFTP服务并设置根目录
+   - 打开串口会话
+   - 等待用户开机
+   - 自动发送烧录命令
+
+3. **依赖项**：
+   - Python 3.6+
+   - pyautogui库
+   - pyperclip库
+
 ## 注意事项
 
 1. 确保开发板已通过串口连接到Windows电脑
 2. 确保MobaXterm已正确配置串口参数
 3. 烧录前确保开发板电源已关闭
 4. TFTP服务的根目录必须正确设置为output文件夹
+5. 自动脚本需要MobaXterm窗口保持可见，不要最小化
 
 ## 故障排除
 
 - **bin文件未生成**：检查交叉编译工具链是否正确安装
 - **构建失败**：查看控制台输出的错误信息
 - **TFTP传输失败**：检查MobaXterm的TFTP服务是否正常运行，根目录设置是否正确
+- **自动脚本失败**：检查Python和pyautogui是否正确安装，MobaXterm窗口是否可见
 
