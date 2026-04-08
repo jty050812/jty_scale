@@ -1,24 +1,21 @@
-# S5PV210 自动烧录工具
+# S5PV210 自动构建和烧录工具
 
 ## 简介
 
-这是一个用于自动构建并烧录bin文件到S5PV210开发板的脚本工具。
+这是一个用于自动构建项目并准备烧录bin文件到S5PV210开发板的脚本工具。
 
 ## 功能特性
 
-- 自动构建项目生成bin文件
-- 检查tftp服务状态
-- 自动复制bin文件到tftp根目录
-- 提供详细的烧录步骤说明
+- 自动清理并构建项目
+- 生成scale.bin文件到output目录
+- 提供详细的Windows平台烧录步骤说明
+- 显示bin文件大小信息
 
 ## 依赖项
 
-在使用本工具前，需要安装以下依赖：
+在Linux系统上使用本工具前，需要安装以下依赖：
 
 1. **交叉编译工具链**：`arm-none-eabi-gcc`
-2. **tftp客户端**：用于传输文件到开发板
-3. **tftp服务器**：用于提供文件传输服务
-4. **MobaXterm**：用于串口通信（Windows平台）
 
 ## 安装依赖
 
@@ -27,77 +24,59 @@
 ```bash
 # 安装交叉编译工具链
 sudo apt-get install gcc-arm-none-eabi
-
-# 安装tftp客户端和服务器
-sudo apt-get install tftp tftpd-hpa
-
-# 配置tftp服务器
-sudo nano /etc/default/tftpd-hpa
-```
-
-在配置文件中设置：
-
-```
-TFTP_USERNAME="tftp"
-TFTP_DIRECTORY="/srv/tftp"
-TFTP_ADDRESS=":69"
-TFTP_OPTIONS="--secure"
-```
-
-创建tftp目录并设置权限：
-
-```bash
-sudo mkdir -p /srv/tftp
-sudo chmod 777 /srv/tftp
-```
-
-重启tftp服务：
-
-```bash
-sudo systemctl restart tftpd-hpa
 ```
 
 ## 使用方法
 
-1. **运行烧录脚本**：
+### 第一步：在Linux系统上构建项目
+
+1. **运行构建脚本**：
 
    ```bash
    ./tools/linux/flash.sh
    ```
 
 2. **脚本执行步骤**：
-   - 检查依赖项
+   - 清理旧的构建文件
    - 构建项目生成bin文件
-   - 检查tftp服务状态
-   - 复制bin文件到tftp根目录
-   - 显示烧录步骤说明
+   - 检查bin文件是否成功生成
+   - 显示详细的Windows平台烧录步骤
 
-3. **在MobaXterm中执行烧录**：
-   - 确保开发板已连接到电脑并启动到U-Boot模式
-   - 在MobaXterm串口工具中输入以下命令：
-     ```
-     tftp 0x30000000 scale.bin
-     go 0x30000000
-     ```
+### 第二步：在Windows系统上烧录到开发板
+
+按照脚本显示的步骤操作：
+
+1. **打开MobaXterm串口工具**
+2. **点击Servers选项打开TFTP服务**
+   - 设置TFTP根目录为项目的output文件夹
+   - output文件夹路径：项目根目录下的output文件夹
+3. **在MobaXterm中打开串口命令行**
+4. **点击开发板电源键开机**
+5. **在串口命令行中依次输入以下命令**：
+   ```
+   tftp 0x30000000 scale.bin
+   go 0x30000000
+   ```
 
 ## 目录结构
 
 ```
 tools/linux/
-├── flash.sh       # 自动烧录脚本
+├── flash.sh       # 自动构建和烧录准备脚本
 ├── mkv210         # S5PV210镜像生成工具
 └── README.md      # 本说明文件
 ```
 
 ## 注意事项
 
-1. 确保开发板与电脑在同一网络中
-2. 确保tftp服务器已正确配置并运行
-3. 确保MobaXterm已正确连接到开发板的串口
-4. 烧录前请确保开发板已启动到U-Boot模式
+1. 确保开发板已通过串口连接到Windows电脑
+2. 确保MobaXterm已正确配置串口参数
+3. 烧录前确保开发板电源已关闭
+4. TFTP服务的根目录必须正确设置为output文件夹
 
 ## 故障排除
 
-- **tftp服务未运行**：执行 `sudo systemctl start tftpd-hpa` 启动服务
 - **bin文件未生成**：检查交叉编译工具链是否正确安装
-- **烧录失败**：检查网络连接和tftp服务器配置
+- **构建失败**：查看控制台输出的错误信息
+- **TFTP传输失败**：检查MobaXterm的TFTP服务是否正常运行，根目录设置是否正确
+
